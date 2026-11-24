@@ -24,6 +24,20 @@ class DataIngestStats:
     records_error: int = 0
 
 def initialize_vessel_metadata(source: str, doc_data: dict, stats: DataIngestStats, verbose: bool = False) -> Tuple[db.VesselMetadataKey, dict] | None:
+    """
+    Parses content of a source JSON file and returns a tuple of a uniquely identifying key and a dictionary of the source file contents.
+
+    Side effects:
+       * Number of warnings in the stats object will be incremented in the following scenarios, making the method return null:
+        1. Unique id could not be parsed from metadata
+        2. Start time and/or end time could not be parsed from metadata, or an invalid start time was parsed from metadata
+
+    :param source: JSON file containing raw metadata
+    :param doc_data: dictionary containing file contents of source
+    :param stats: object holding metrics indicative of created, updated, deleted, and erroneous metadata for current processing run
+    :param verbose: enables verbose log messages
+    :return: Tuple of formatted vessel metadata key and file content dictionary, null if a parsing error occurs
+    """
     stats.records_total += 1
     try:
         uniqueId = get_unique_vessel_id(doc_data)
