@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
-from typing import Iterator, Sequence
+from typing import Iterator, Sequence, Tuple
 import sys
 
 import json_stream.base
@@ -13,6 +13,60 @@ from ..metadata import VesselMetadataKey
 from .extraction import get_unique_vessel_id, get_start_end_times, sort_dict_by_keys
 from . import db
 
+@dataclass
+class DataIngestStats:
+    records_total: int = 0
+    records_written: int = 0
+    records_intersected: int = 0
+    records_updated: int = 0
+    records_deleted: int = 0
+    records_warning: int = 0
+    records_error: int = 0
+
+def initialize_vessel_metadata(source: str, doc_data: dict, stats: DataIngestStats, verbose: bool = False) -> Tuple[db.VesselMetadataKey, dict] | None:
+    stats.records_total += 1
+    try:
+        uniqueId = get_unique_vessel_id(doc_data)
+    except ValueError as e:
+        stats.records_warning += 1
+        print(f"WARNING: Unable to read unique ID for source {source} due to error {str(e)}, skipping...")
+        return None
+    if uniqueId is None:
+        stats.records_warning += 1
+        print(f"WARNING: No unique ID for source {source}, skipping...")
+        return None
+    if verbose:
+        sys.stdout.write(f"Processing vessel metadata for {uniqueId} in file {source}...")
+    try:
+        start_time, end_time = get_start_end_times(doc_data)
+        if start_time < 0:
+            stats.records_warning += 1
+            print(f"\n\tWARNING: Encountered start time < 0 ({start_time}) for {uniqueId} for source {source}, skipping...")
+            return None
+    except ValueError as e:
+        stats.records_warning += 1
+        print(f"\n\tWARNING: Unable to read start,end time for {uniqueId} for source {source} due to error {str(e)}, skipping...")
+        return None
+    if start_time is None or end_time is None:
+        stats.records_warning += 1
+        print(f"\n\tWARNING: Expected start and end time for {uniqueId} for source {source} to not be None, "
+              "but one of them was None, skipping...")
+        return None
+    # Sort metadata so that hashing is consistent for the same set of metadata
+    doc_meta: dict = sort_dict_by_keys(doc_data, {})
+    # Round numeric values in metadata to normalize essentially identical metadata
+    round_numeric(doc_meta)
+    # print(f"sorted doc_meta: {json.dumps(doc_meta)}\n\n")
+    key = db.VesselMetadataKey(
+        unique_vessel_id=uniqueId,
+        start_time=start_time,
+        end_time=end_time,
+        md_hash=hash_metadata(doc_meta)
+    )
+    if verbose:
+        sys.stdout.write('done.\n')
+
+    return key, doc_meta
 
 def round_numeric(meta: dict|list, *,
                   exclude_keys: tuple = ('time', 'fileType', 'submissionInfo', 'dataProcessed')):
@@ -70,60 +124,11 @@ def load_vessel_metadata(doc_root: Path,
                          *,
                          verbose: bool = False) -> Iterator[tuple[VesselMetadataKey, dict]]:
     for doc, doc_data in iterate_json_objects(doc_root, verbose=verbose):
-        stats.records_total += 1
-        try:
-            uniqueId = get_unique_vessel_id(doc_data)
-        except ValueError as e:
-            stats.records_warning += 1
-            print(f"WARNING: Unable to read unique ID for file {str(doc)} due to error {str(e)}, skipping...")
+        t = initialize_vessel_metadata(str(doc), doc_data, stats, verbose)
+        if t is None:
             continue
-        if uniqueId is None:
-            stats.records_warning += 1
-            print(f"WARNING: No unique ID for file {str(doc)}, skipping...")
-            continue
-        if verbose:
-            sys.stdout.write(f"Processing vessel metadata for {uniqueId} in file {str(doc)}...")
-        try:
-            start_time, end_time = get_start_end_times(doc_data)
-            if start_time < 0:
-                stats.records_warning += 1
-                print(f"\n\tWARNING: Encountered start time < 0 ({start_time}) for {uniqueId} for file {str(doc)}, skipping...")
-                continue
-        except ValueError as e:
-            stats.records_warning += 1
-            print(f"\n\tWARNING: Unable to read start,end time for {uniqueId} for file {str(doc)} due to error {str(e)}, skipping...")
-            continue
-        if start_time is None or end_time is None:
-            stats.records_warning += 1
-            print(f"\n\tWARNING: Expected start and end time for {uniqueId} for file {str(doc)} to not be None, "
-                  "but one of them was None, skipping...")
-            continue
-        # Sort metadata so that hashing is consistent for the same set of metadata
-        doc_meta: dict = sort_dict_by_keys(doc_data, {})
-        # Round numeric values in metadata to normalize essentially identical metadata
-        round_numeric(doc_meta)
-        # print(f"sorted doc_meta: {json.dumps(doc_meta)}\n\n")
-        key = VesselMetadataKey(
-            unique_vessel_id=uniqueId,
-            start_time=start_time,
-            end_time=end_time,
-            md_hash=hash_metadata(doc_meta)
-        )
-        if verbose:
-            sys.stdout.write('done.\n')
-        yield key, doc_meta
 
-
-@dataclass
-class DataIngestStats:
-    records_total: int = 0
-    records_written: int = 0
-    records_intersected: int = 0
-    records_updated: int = 0
-    records_deleted: int = 0
-    records_warning: int = 0
-    records_error: int = 0
-
+        yield t
 
 def remove_key(d: dict, key_compound: str):
     """
